@@ -1,0 +1,224 @@
+// Copied from cde-next/prisma/schema.prisma to keep a single DB model
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id               String    @id @default(cuid())
+  name             String
+  email            String    @unique
+  hashedPassword   String
+  createdAt        DateTime  @default(now())
+  role             String    @default("user")
+  experienceLevel  Int       @default(1)
+  jobs             JobReport[]
+  confirmedRepairs ActualRepair[]
+  feedbacks        Feedback[]
+  resetTokens      PasswordResetToken[]
+}
+
+model Vehicle {
+  id                      String      @id @default(cuid())
+  vin                     String      @unique
+  type                    String?
+  make                    String?
+  model                   String?
+  year                    Int?
+  weightClass             String?
+  owner                   String?
+  notes                   String?
+  createdAt               DateTime    @default(now())
+  jobs                    JobReport[]
+  referenceImages         VehicleReferenceImage[]
+
+  bodyClass               String?
+  driveType               String?
+  engineModel             String?
+  engineCylinders         Int?
+  engineDisplacementL     Float?
+  fuelTypePrimary         String?
+  brakeSystemType         String?
+  manufacturerName        String?
+  plantCity               String?
+  plantState              String?
+  plantCountry            String?
+  trim                    String?
+  series                  String?
+  steeringLocation        String?
+  transmissionStyle       String?
+  vehicleType             String?
+  gvwr                    String?
+  doors                   String?
+  wheels                  String?
+  entertainmentSystem     String?
+  abs                     String?
+  airbagLocations         String?
+  electronicStabilityControl String?
+  basePrice               String?
+  bedLength               String?
+  cabType                 String?
+}
+
+model JobReport {
+  id          String      @id @default(cuid())
+  vin         String
+  uploadedById String
+  createdAt   DateTime    @default(now())
+  status      String      @default("PENDING_ANALYSIS")
+  aiEstimate  Float?
+  aiResponse  String?
+  user        User        @relation(fields: [uploadedById], references: [id])
+  vehicle     Vehicle     @relation(fields: [vin], references: [vin])
+  images      Image[]
+  detectedDamages DetectedDamage[]
+  repairEstimates RepairEstimate[]
+  actualRepairs ActualRepair[]
+  feedbacks   Feedback[]
+  vinMetadata VINMetadata[]
+}
+
+model RepairEstimate {
+  id          String    @id @default(cuid())
+  jobId       String
+  timeEstimate Float
+  costEstimate Float
+  createdAt   DateTime  @default(now())
+  job         JobReport @relation(fields: [jobId], references: [id])
+  feedback    Feedback?
+}
+
+model Feedback {
+  id            Int      @id @default(autoincrement())
+  userId        String
+  jobId         String?
+  estimateId    String?  @unique
+  feedbackType  String   @default("app")
+  message       String
+  actualHours   Float?
+  experienceScoreSnapshot Float?
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id])
+  job           JobReport? @relation(fields: [jobId], references: [id])
+  estimate      RepairEstimate? @relation(fields: [estimateId], references: [id])
+}
+
+model Image {
+  id          String    @id @default(cuid())
+  jobId       String
+  imagePath   String
+  truckSectionId String?
+  truckSection   TruckSection? @relation(fields: [truckSectionId], references: [id])
+  vehicleParts   ImageVehiclePart[]
+  damageTypes    ImageDamageType[]
+  severityId     String?
+  severity       SeverityLevel? @relation(fields: [severityId], references: [id])
+  notes        String?
+  uploadedAt   DateTime  @default(now())
+  job          JobReport @relation(fields: [jobId], references: [id])
+}
+
+model DetectedDamage {
+  id           String   @id @default(cuid())
+  jobId        String
+  aiOutputJson String
+  generatedAt  DateTime @default(now())
+  job          JobReport @relation(fields: [jobId], references: [id])
+}
+
+model ActualRepair {
+  id          String   @id @default(cuid())
+  jobId       String
+  actualHours Float
+  notes       String?
+  confirmedById String?
+  confirmedAt DateTime @default(now())
+  job         JobReport @relation(fields: [jobId], references: [id])
+  user        User?     @relation(fields: [confirmedById], references: [id])
+}
+
+model TrainingImage {
+  id        String   @id @default(cuid())
+  imageUrl  String
+  label     String?
+  uploadedAt DateTime @default(now())
+}
+
+model VINMetadata {
+  id        String   @id @default(cuid())
+  jobId     String
+  vin       String
+  make      String?
+  model     String?
+  year      Int?
+  engine    String?
+  misc      String?
+  decodedAt DateTime @default(now())
+  job       JobReport @relation(fields: [jobId], references: [id])
+}
+
+model TruckSection {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  vehicleParts VehiclePart[]
+  images      Image[]
+}
+
+model VehiclePart {
+  id           String       @id @default(cuid())
+  name         String       @unique
+  truckSectionId String
+  truckSection TruckSection @relation(fields: [truckSectionId], references: [id])
+  images       ImageVehiclePart[]
+}
+
+model DamageType {
+  id   String @id @default(cuid())
+  name String @unique
+  images ImageDamageType[]
+}
+
+model SeverityLevel {
+  id   String @id @default(cuid())
+  name String @unique
+  images Image[]
+}
+
+model ImageVehiclePart {
+  imageId      String
+  vehiclePartId String
+  image        Image       @relation(fields: [imageId], references: [id])
+  vehiclePart  VehiclePart @relation(fields: [vehiclePartId], references: [id])
+
+  @@id([imageId, vehiclePartId])
+}
+
+model ImageDamageType {
+  imageId     String
+  damageTypeId String
+  image       Image      @relation(fields: [imageId], references: [id])
+  damageType  DamageType @relation(fields: [damageTypeId], references: [id])
+
+  @@id([imageId, damageTypeId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+}
+
+model VehicleReferenceImage {
+  id        String   @id @default(cuid())
+  imageUrl  String
+  angle     String?
+  vehicleVin String
+  vehicle   Vehicle  @relation(fields: [vehicleVin], references: [vin])
+}
+

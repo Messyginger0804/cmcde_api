@@ -1,0 +1,28 @@
+{
+  "name": "cmcde_fastify_api",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development node src/server.js",
+    "prisma:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "fastify": "^5.5.0",
+    "bcryptjs": "^2.4.3",
+    "@fastify/multipart": "^8.0.0"
+  },
+  "optionalDependencies": {
+    "@fastify/cors": "^10.0.1",
+    "@prisma/client": "^5.18.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
