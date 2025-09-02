@@ -13,7 +13,7 @@
   "dependencies": {
     "fastify": "^5.5.0",
     "bcryptjs": "^2.4.3",
-    "@fastify/multipart": "^8.0.0"
+    "@fastify/multipart": "^9.0.0"
   },
   "optionalDependencies": {
     "@fastify/cors": "^10.0.1",

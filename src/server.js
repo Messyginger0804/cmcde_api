@@ -16,9 +16,12 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 }
 
 
+// Multipart: align with v5 docs and set sensible limits
 fastify.register(require('@fastify/multipart'), {
   limits: {
-    
+    fileSize: 25 * 1024 * 1024, // 25MB per file
+    files: 10,
+    fields: 100
   },
 });
 
@@ -30,6 +33,17 @@ try {
   });
 } catch (e) {
   fastify.log.warn('Failed to register @fastify/cors. It might not be installed or an error occurred:', e.message);
+}
+
+// Static file serving for public/ (e.g., uploads)
+try {
+  fastify.register(require('@fastify/static'), {
+    root: path.join(__dirname, '..', 'public'),
+    prefix: '/',
+    decorateReply: false,
+  });
+} catch (e) {
+  fastify.log.warn('Failed to register @fastify/static. It might not be installed:', e.message);
 }
 
 
@@ -75,7 +89,19 @@ function processNHTSAData(nhtsaResults, vin) {
 
 
 
-fastify.post('/api/register', async (request, reply) => {
+fastify.post('/api/register', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['name', 'email', 'password'],
+      properties: {
+        name: { type: 'string', minLength: 1 },
+        email: { type: 'string', minLength: 3 },
+        password: { type: 'string', minLength: 6 }
+      }
+    }
+  }
+}, async (request, reply) => {
   const prisma = getPrisma();
   if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
 
@@ -96,7 +122,7 @@ fastify.post('/api/register', async (request, reply) => {
     });
     reply.send({ success: true, message: 'User registered successfully', user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (error) {
-    
+    if (error.code === 'P2002') {
       return reply.status(409).send({ success: false, message: 'Email already registered' });
     }
     request.log.error(error, 'User registration failed');
@@ -105,7 +131,18 @@ fastify.post('/api/register', async (request, reply) => {
 });
 
 
-fastify.post('/api/auth/login', async (request, reply) => {
+fastify.post('/api/auth/login', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['email', 'password'],
+      properties: {
+        email: { type: 'string', minLength: 3 },
+        password: { type: 'string', minLength: 6 }
+      }
+    }
+  }
+}, async (request, reply) => {
   const prisma = getPrisma();
   if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
 
@@ -134,7 +171,17 @@ fastify.post('/api/auth/login', async (request, reply) => {
 });
 
 
-fastify.post('/api/auth/forgot-password', async (request, reply) => {
+fastify.post('/api/auth/forgot-password', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['email'],
+      properties: {
+        email: { type: 'string', minLength: 3 }
+      }
+    }
+  }
+}, async (request, reply) => {
   const prisma = getPrisma();
   if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
 
@@ -146,11 +193,12 @@ fastify.post('/api/auth/forgot-password', async (request, reply) => {
   try {
     const user = await prisma.user.findUnique({ where: { email } });
     
+      if (!user) {
       return reply.send({ success: true, message: 'If an account with that email exists, a password reset link has been sent.' });
     }
 
     const token = crypto.randomBytes(32).toString('hex');
-    
+    const expiresAt = new Date(Date.now() + 3600000); // 1 hour from now
 
     await prisma.passwordResetToken.create({
       data: {
@@ -171,7 +219,18 @@ fastify.post('/api/auth/forgot-password', async (request, reply) => {
 });
 
 
-fastify.post('/api/auth/reset-password', async (request, reply) => {
+fastify.post('/api/auth/reset-password', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['token', 'newPassword'],
+      properties: {
+        token: { type: 'string', minLength: 10 },
+        newPassword: { type: 'string', minLength: 6 }
+      }
+    }
+  }
+}, async (request, reply) => {
   const prisma = getPrisma();
   if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
 
@@ -401,7 +460,17 @@ fastify.get('/api/jobs', async (request, reply) => {
   }
 });
 
-fastify.post('/api/jobs', async (request, reply) => {
+fastify.post('/api/jobs', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['vin'],
+      properties: {
+        vin: { type: 'string', minLength: 5 }
+      }
+    }
+  }
+}, async (request, reply) => {
   const prisma = getPrisma();
   const userId = request.headers['x-user-id'];
   if (!prisma) return reply.status(501).send({ message: 'DB not available' });
@@ -479,12 +548,26 @@ fastify.delete('/api/jobs/:jobId', async (request, reply) => {
 });
 
 
-fastify.post('/api/feedback', async (request, reply) => {
+fastify.post('/api/feedback', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['jobId', 'feedbackType', 'actualHours'],
+      properties: {
+        jobId: { type: 'string', minLength: 1 },
+        feedbackType: { type: 'string', minLength: 1 },
+        message: { type: 'string' },
+        actualHours: { type: 'number', minimum: 0 },
+        rating: { type: 'number' }
+      }
+    }
+  }
+}, async (request, reply) => {
   const prisma = getPrisma();
   const userId = request.headers['x-user-id'];
   if (!prisma) return reply.status(501).send({ message: 'DB not available' });
   if (!userId) return reply.status(401).send({ message: 'Unauthorized' });
-  
+  const { jobId, feedbackType, message, actualHours, rating } = request.body;
   try {
     const feedback = await prisma.feedback.create({
       data: {
@@ -504,7 +587,25 @@ fastify.post('/api/feedback', async (request, reply) => {
 });
 
 // --- /api/vehicles --- (create or upsert vehicle by vin) (already exists)
-fastify.post('/api/vehicles', async (request, reply) => {
+fastify.post('/api/vehicles', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['vin'],
+      properties: {
+        vin: { type: 'string', minLength: 5 },
+        type: { type: 'string' },
+        make: { type: 'string' },
+        model: { type: 'string' },
+        year: { type: 'integer' },
+        weightClass: { type: 'string' },
+        owner: { type: 'string' },
+        notes: { type: 'string' },
+        referenceImagePath: { type: 'string' }
+      }
+    }
+  }
+}, async (request, reply) => {
   const prisma = getPrisma();
   const { vin, type, make, model, year, weightClass, owner, notes, referenceImagePath } = request.body || {};
   if (!vin) return reply.status(400).send({ message: 'vin is required' });
