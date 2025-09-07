@@ -460,6 +460,33 @@ fastify.get('/api/jobs', async (request, reply) => {
   }
 });
 
+// PUT /api/jobs/:jobId (update expert hours/status) — aligns with Next.js API
+fastify.put('/api/jobs/:jobId', async (request, reply) => {
+  const prisma = getPrisma();
+  if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
+
+  const { jobId } = request.params;
+  const { expertHours } = request.body || {};
+
+  if (expertHours === undefined) {
+    return reply.status(400).send({ success: false, message: 'Expert hours are required' });
+  }
+
+  try {
+    const updated = await prisma.jobReport.update({
+      where: { id: jobId },
+      data: {
+        expertEstimate: parseFloat(expertHours),
+        status: 'COMPLETED',
+      },
+    });
+    return reply.send({ success: true, job: updated });
+  } catch (err) {
+    request.log.error({ err }, `Failed to update job ${jobId}`);
+    return reply.status(500).send({ success: false, message: 'Failed to update job' });
+  }
+});
+
 fastify.post('/api/jobs', {
   schema: {
     body: {
@@ -627,6 +654,16 @@ fastify.post('/api/vehicles', {
 });
 
 // --- /api/upload --- (New: for image uploads with labels)
+// GET /api/upload — parity with Next.js route (simple availability check)
+fastify.get('/api/upload', async (_request, reply) => {
+  return reply.send({
+    success: true,
+    message: 'Upload API is accessible',
+    methods: ['POST'],
+    timestamp: new Date().toISOString(),
+  });
+});
+
 fastify.post('/api/upload', async (request, reply) => {
   const prisma = getPrisma();
   if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
@@ -758,6 +795,117 @@ fastify.post('/api/vehicle-database', async (request, reply) => {
   }
 });
 
+// --- /api/export/training-data --- (parity with Next.js route)
+fastify.get('/api/export/training-data', async (request, reply) => {
+  const prisma = getPrisma();
+  if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
+
+  try {
+    const { format = 'json', includeUnlabeled } = request.query || {};
+    const includeUnlabeledBool = String(includeUnlabeled).toLowerCase() === 'true';
+
+    const whereCondition = includeUnlabeledBool ? {} : { vehicleParts: { some: {} } };
+
+    const images = await prisma.image.findMany({
+      where: whereCondition,
+      include: {
+        truckSection: true,
+        vehicleParts: { include: { vehiclePart: true } },
+        damageTypes: { include: { damageType: true } },
+        severity: true,
+        job: {
+          include: {
+            vehicle: true,
+            user: true,
+          }
+        }
+      },
+      orderBy: { uploadedAt: 'desc' }
+    });
+
+    const transformed = images.map(img => ({
+      imageId: img.id,
+      imagePath: img.imagePath,
+      uploadedAt: img.uploadedAt,
+      labels: {
+        vehicleParts: (img.vehicleParts || []).map(vp => vp.vehiclePart?.name || vp.vehiclePartId),
+        damageType: (img.damageTypes || []).map(dt => dt.damageType?.name || dt.damageTypeId),
+        severity: img.severity?.name || img.severityId || null,
+        notes: img.notes || null,
+      },
+      vehicle: img.job?.vehicle ? {
+        vin: img.job.vehicle.vin,
+        make: img.job.vehicle.make,
+        model: img.job.vehicle.model,
+        year: img.job.vehicle.year,
+        vehicleType: img.job.vehicle.vehicleType,
+        bodyClass: img.job.vehicle.bodyClass,
+        weightClass: img.job.vehicle.weightClass,
+        gvwr: img.job.vehicle.gvwr,
+      } : null,
+      jobId: img.jobId,
+      jobCreatedAt: img.job?.createdAt || null,
+      labeler: img.job?.user ? {
+        userId: img.job.user.id,
+        name: img.job.user.name,
+        experienceLevel: img.job.user.experienceLevel || null,
+      } : null,
+    }));
+
+    const stats = {
+      totalImages: transformed.length,
+      labeledImages: transformed.filter(d => Array.isArray(d.labels.vehicleParts) && d.labels.vehicleParts.length > 0).length,
+      unlabeledImages: transformed.filter(d => !Array.isArray(d.labels.vehicleParts) || d.labels.vehicleParts.length === 0).length,
+      partDistribution: {},
+      damageTypeDistribution: {},
+      severityDistribution: {},
+      vehicleTypeDistribution: {},
+    };
+
+    transformed.forEach(d => {
+      (d.labels.vehicleParts || []).forEach(p => { stats.partDistribution[p] = (stats.partDistribution[p] || 0) + 1; });
+      (Array.isArray(d.labels.damageType) ? d.labels.damageType : (d.labels.damageType ? [d.labels.damageType] : [])).forEach(t => { stats.damageTypeDistribution[t] = (stats.damageTypeDistribution[t] || 0) + 1; });
+      if (d.labels.severity) stats.severityDistribution[d.labels.severity] = (stats.severityDistribution[d.labels.severity] || 0) + 1;
+      if (d.vehicle?.vehicleType) stats.vehicleTypeDistribution[d.vehicle.vehicleType] = (stats.vehicleTypeDistribution[d.vehicle.vehicleType] || 0) + 1;
+    });
+
+    if (String(format).toLowerCase() === 'csv') {
+      const headers = [
+        'imageId','imagePath','uploadedAt','vehicleParts','damageType','severity','notes','vin','make','model','year','vehicleType','bodyClass','weightClass','gvwr','jobId','jobCreatedAt','labelerExperience'
+      ];
+      const rows = transformed.map(item => [
+        item.imageId,
+        item.imagePath,
+        item.uploadedAt,
+        Array.isArray(item.labels.vehicleParts) ? item.labels.vehicleParts.join('|') : '',
+        Array.isArray(item.labels.damageType) ? item.labels.damageType.join('|') : (item.labels.damageType || ''),
+        item.labels.severity || '',
+        item.labels.notes || '',
+        item.vehicle?.vin || '',
+        item.vehicle?.make || '',
+        item.vehicle?.model || '',
+        item.vehicle?.year || '',
+        item.vehicle?.vehicleType || '',
+        item.vehicle?.bodyClass || '',
+        item.vehicle?.weightClass || '',
+        item.vehicle?.gvwr || '',
+        item.jobId || '',
+        item.jobCreatedAt || '',
+        item.labeler?.experienceLevel || ''
+      ]);
+      const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(',')).join('\n');
+      reply.header('Content-Type', 'text/csv');
+      reply.header('Content-Disposition', `attachment; filename="training-data-${new Date().toISOString().slice(0,10)}.csv"`);
+      return reply.send(csv);
+    }
+
+    return reply.send({ success: true, metadata: { exportedAt: new Date().toISOString(), format, includeUnlabeled: includeUnlabeledBool, statistics: stats }, data: transformed });
+  } catch (err) {
+    request.log.error({ err }, 'Failed to export training data');
+    return reply.status(500).send({ success: false, message: 'Failed to export training data' });
+  }
+});
+
 // DELETE /api/vehicle-database?id=:id (delete training image)
 fastify.delete('/api/vehicle-database', async (request, reply) => {
   const prisma = getPrisma();
@@ -833,6 +981,53 @@ fastify.post('/api/ai/repair-estimate', async (request, reply) => {
   } catch (error) {
     request.log.error(error, 'Failed to save AI repair estimate');
     reply.status(500).send({ success: false, message: 'Internal server error' });
+  }
+});
+
+// POST /api/estimates — aligns with Next.js route for saving expert-corrected hours
+fastify.post('/api/estimates', async (request, reply) => {
+  const prisma = getPrisma();
+  if (!prisma) return reply.status(501).send({ success: false, message: 'Database not available' });
+
+  try {
+    const { jobId, aiEstimate, correctedHours } = request.body || {};
+
+    if (!jobId || correctedHours === undefined) {
+      return reply.status(400).send({ success: false, message: 'Missing required fields: jobId, correctedHours' });
+    }
+
+    const corrected = parseFloat(correctedHours);
+    if (Number.isNaN(corrected) || corrected < 0) {
+      return reply.status(400).send({ success: false, message: 'Corrected hours must be a positive number' });
+    }
+
+    // Upsert estimate for the job
+    const existing = await prisma.repairEstimate.findFirst({ where: { jobId } });
+    let estimate;
+    if (existing) {
+      estimate = await prisma.repairEstimate.update({
+        where: { id: existing.id },
+        data: { timeEstimate: corrected, costEstimate: 0 }
+      });
+    } else {
+      estimate = await prisma.repairEstimate.create({
+        data: { jobId, timeEstimate: corrected, costEstimate: 0 }
+      });
+    }
+
+    return reply.send({
+      success: true,
+      message: 'Expert correction saved successfully',
+      correction: {
+        id: estimate.id,
+        aiEstimate: aiEstimate,
+        correctedHours: corrected,
+        correctedAt: estimate.createdAt
+      }
+    });
+  } catch (err) {
+    request.log.error({ err }, 'Failed to save expert correction');
+    return reply.status(500).send({ success: false, message: 'Failed to save expert correction' });
   }
 });
 
